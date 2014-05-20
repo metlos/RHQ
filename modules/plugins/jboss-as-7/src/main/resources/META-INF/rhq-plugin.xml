@@ -1549,6 +1549,13 @@
         <value-context>measurementTrait</value-context>
         <value-name>deployDir</value-name>
       </destination-base-dir>
+      <destination-definition name="Patches">
+        <description>Use this location to apply patches to the server</description>
+        <connection>STANDALONE</connection>
+        <referenced-configuration>
+          <all of="pluginConfiguration"/>
+        </referenced-configuration>
+      </destination-definition>
     </bundle-target>
 
     <help>
@@ -13513,4 +13520,80 @@
     </resource-configuration>
   </service>
 
+  <service name="Wildfly/JBoss EAP Patch Handler"
+             discovery="PatchHandlerDiscoveryComponent"
+             class="PatchHandlerComponent"
+             singleton="true"
+             description="Handles installation of patches of Wildfly or JBoss EAP application servers and their variants">
+
+        <runs-inside>
+            <parent-resource-type name="Windows"  plugin="Platforms"/>
+            <parent-resource-type name="Linux"    plugin="Platforms"/>
+            <parent-resource-type name="Solaris"  plugin="Platforms"/>
+            <parent-resource-type name="HP-UX"    plugin="Platforms"/>
+            <parent-resource-type name="AIX"      plugin="Platforms"/>
+            <parent-resource-type name="FreeBSD"  plugin="Platforms"/>
+            <parent-resource-type name="Mac OS X" plugin="Platforms"/>
+        </runs-inside>
+
+        <bundle type="Wildfly Patch" />
+  </service>
+
+  <service name="Patch" discovery="PatchDiscoveryComponent" class="PatchComponent" description="Patch installed on top of the base installation."
+             createDeletePolicy="both" creationDataType="content">
+      <runs-inside>
+          <parent-resource-type name="JBossAS7 Standalone Server" plugin="&pluginName;"/>
+      </runs-inside>
+
+      <plugin-configuration>
+        <c:group name="Rollback Behavior">
+            <c:description>
+                These properties specify the behavior when the patch resource is deleted.
+                This action is translated into its rollback in the Wildfly/JBoss EAP server.
+            </c:description>
+
+            <c:simple-property name="reset-configuration" displayName="Reset Configuration" required="true"
+                               default="false" type="boolean">
+                <c:description>
+                    Signifies whether the rollback operation should
+                    reset the installation configurations to their state
+                    before the patch was applied.
+                </c:description>
+            </c:simple-property>
+            <c:simple-property name="override-all" displayName="Override All" required="false" type="boolean">
+                <c:description>
+                    Signifies to bypass any content verification on the
+                    miscellaneous items changed by the patch. Default is "false".
+                </c:description>
+            </c:simple-property>
+            <c:simple-property name="override-modules" displayName="Override Modules" required="false" type="boolean">
+                <c:description>
+                    Signifies to bypass any content verification on the
+                    modules and OSGi bundles affected by the patch. Default is "false".
+                </c:description>
+            </c:simple-property>
+            <c:simple-property name="override" displayName="Override" required="false" type="longString">
+                <c:description>
+                    The value is a comma-separated list of the miscellaneous
+                    items in the patch that can be overridden on the server
+                    whether the item reports a conflict or not.
+                </c:description>
+            </c:simple-property>
+            <c:simple-property name="preserve" displayName="Preserve" required="false" type="longString">
+                <c:description>
+                    The value is a comma-separated list of the miscellaneous
+                    items that must be preserved and not modified by
+                    applying or rolling back a patch.
+                </c:description>
+            </c:simple-property>
+        </c:group>
+      </plugin-configuration>
+
+      <metric property="patchId" dataType="trait" displayType="summary" description="The ID of the patch"/>
+      <metric property="type" dataType="trait" displayType="summary" description="The type of the patch"/>
+      <metric property="appliedAt" dataType="trait" displayType="summary" description="The date the patch was applied in a format reported by the server." />
+
+      <content name="wflyPatch" category="deployable" isCreationType="true" supportsArchitecture="false"
+               description="Wildfly/JBoss EAP Patch File"/>
+  </service>
 </plugin>

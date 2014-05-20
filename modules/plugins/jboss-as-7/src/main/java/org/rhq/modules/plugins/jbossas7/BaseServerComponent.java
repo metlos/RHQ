@@ -51,14 +51,12 @@ import org.rhq.core.pluginapi.inventory.ResourceComponent;
 import org.rhq.core.pluginapi.inventory.ResourceContext;
 import org.rhq.core.pluginapi.measurement.MeasurementFacet;
 import org.rhq.core.pluginapi.operation.OperationResult;
-import org.rhq.core.pluginapi.util.ProcessExecutionUtility;
 import org.rhq.core.pluginapi.util.StartScriptConfiguration;
-import org.rhq.core.system.ProcessExecution;
 import org.rhq.core.system.ProcessExecutionResults;
 import org.rhq.core.system.ProcessInfo;
-import org.rhq.core.system.SystemInfo;
 import org.rhq.core.util.PropertiesFileUpdate;
 import org.rhq.core.util.StringUtil;
+import org.rhq.modules.plugins.jbossas7.helper.ServerCommandRunner;
 import org.rhq.modules.plugins.jbossas7.helper.HostConfiguration;
 import org.rhq.modules.plugins.jbossas7.helper.HostPort;
 import org.rhq.modules.plugins.jbossas7.helper.ServerPluginConfiguration;
@@ -319,43 +317,11 @@ public abstract class BaseServerComponent<T extends ResourceComponent<?>> extend
             return operationResult;
         }
 
-        String startScriptPrefix = startScriptConfig.getStartScriptPrefix();
-        File startScriptFile = getStartScriptFile();
-        ProcessExecution processExecution = ProcessExecutionUtility.createProcessExecution(startScriptPrefix,
-            startScriptFile);
-
-        List<String> arguments = processExecution.getArguments();
-        if (arguments == null) {
-            arguments = new ArrayList<String>();
-            processExecution.setArguments(arguments);
-        }
-
-        List<String> startScriptArgs = startScriptConfig.getStartScriptArgs();
-        for (String startScriptArg : startScriptArgs) {
-            startScriptArg = replacePropertyPatterns(startScriptArg);
-            arguments.add(startScriptArg);
-        }
-
-        Map<String, String> startScriptEnv = startScriptConfig.getStartScriptEnv();
-        for (String envVarName : startScriptEnv.keySet()) {
-            String envVarValue = startScriptEnv.get(envVarName);
-            envVarValue = replacePropertyPatterns(envVarValue);
-            startScriptEnv.put(envVarName, envVarValue);
-        }
-        processExecution.setEnvironmentVariables(startScriptEnv);
-
-        // When running on Windows 9x, standalone.bat and domain.bat need the cwd to be the AS bin dir in order to find
-        // standalone.bat.conf and domain.bat.conf respectively.
-        processExecution.setWorkingDirectory(startScriptFile.getParent());
-        processExecution.setCaptureOutput(true);
-        processExecution.setWaitForCompletion(0);
-
-        if (log.isDebugEnabled()) {
-            log.debug("About to execute the following process: [" + processExecution + "]");
-        }
-        SystemInfo systemInfo = context.getSystemInformation();
-        ProcessExecutionResults results = systemInfo.executeProcess(processExecution);
+        ProcessExecutionResults results = ServerCommandRunner
+            .onServer(context.getPluginConfiguration(), getMode(), context.getSystemInformation())
+            .startServer();
         logExecutionResults(results);
+
         if (results.getError() != null) {
             operationResult.setErrorMessage(results.getError().getMessage());
         } else if (results.getExitCode() != null && results.getExitCode() != 0) {
@@ -386,68 +352,16 @@ public abstract class BaseServerComponent<T extends ResourceComponent<?>> extend
             return result;
         }
 
-        File homeDir = serverPluginConfig.getHomeDir();
-        File startScriptFile = new File(new File(homeDir, "bin"), getMode().getCliScriptFileName());
+        ServerCommandRunner runner = ServerCommandRunner.onServer(context.getPluginConfiguration(), getMode(),
+            context.getSystemInformation())
+            .waitingFor(Integer.parseInt(parameters.getSimpleValue("waitTime", "0")))
+            .killingOnTimeout(Boolean.parseBoolean(parameters.getSimpleValue("killOnTimeout", "false")));
 
-        ProcessExecution processExecution = ProcessExecutionUtility.createProcessExecution(null,
-            startScriptFile);
-
-        List<String> arguments = processExecution.getArguments();
-        if (arguments == null) {
-            arguments = new ArrayList<String>();
-            processExecution.setArguments(arguments);
-        }
-        String commandArg;
         String command = parameters.getSimpleValue("commands");
-        if (command!=null) {
-            commandArg = "--commands="+command;
-        } else {
-            File script = new File(parameters.getSimpleValue("file"));
-            if (!script.isAbsolute()) {
-                script = new File(homeDir,parameters.getSimpleValue("file"));
-            }
-            commandArg="--file="+script.getAbsolutePath();
-        }
-        arguments.add("-c");
-        arguments.add(commandArg);
-        arguments.add("--user="+serverPluginConfig.getUser());
-        arguments.add("--password="+serverPluginConfig.getPassword());
-        arguments.add("--controller="+serverPluginConfig.getNativeHost()+":"+serverPluginConfig.getNativePort());
-
-        Map<String, String> startScriptEnv = startScriptConfig.getStartScriptEnv();
-        for (String envVarName : startScriptEnv.keySet()) {
-            String envVarValue = startScriptEnv.get(envVarName);
-            envVarValue = replacePropertyPatterns(envVarValue);
-            startScriptEnv.put(envVarName, envVarValue);
-        }
-        processExecution.setEnvironmentVariables(startScriptEnv);
-
-        // When running on Windows 9x, standalone.bat and domain.bat need the cwd to be the AS bin dir in order to find
-        // standalone.bat.conf and domain.bat.conf respectively.
-        processExecution.setWorkingDirectory(startScriptFile.getParent());
-        processExecution.setCaptureOutput(true);
-        processExecution.setWaitForCompletion(MAX_PROCESS_WAIT_TIME);
-        processExecution.setKillOnTimeout(false);
-
-        PropertySimple waitTimeProp = parameters.getSimple("waitTime");
-        if (waitTimeProp != null && waitTimeProp.getLongValue() != null) {
-            long waitTime = waitTimeProp.getLongValue() * 1000L;
-            if (waitTime <= 0) {
-                result.setErrorMessage("waitTime parameter must be positive number");
-                return result;
-            }
-            processExecution.setWaitForCompletion(waitTime);
-        }
-        if (Boolean.parseBoolean(parameters.getSimpleValue("killOnTimeout", "false"))) {
-            processExecution.setKillOnTimeout(true);
-        }
-
-        if (log.isDebugEnabled()) {
-            log.debug("About to execute the following process: [" + processExecution + "]");
-        }
-        SystemInfo systemInfo = context.getSystemInformation();
-        ProcessExecutionResults results = systemInfo.executeProcess(processExecution);
+        ProcessExecutionResults results = command != null ? runner.runCliCommand(command) :
+            runner.runCliScript(new File(parameters.getSimpleValue("file")));
         logExecutionResults(results);
+
         if (results.getError() != null) {
             result.setErrorMessage(results.getError().getMessage());
         } else if (results.getExitCode() == null) {
@@ -822,9 +736,20 @@ public abstract class BaseServerComponent<T extends ResourceComponent<?>> extend
 
     // Replace any "%xxx%" substrings with the values of plugin config props "xxx".
     private String replacePropertyPatterns(String value) {
+        return replacePropertyPatterns(value, context.getPluginConfiguration());
+    }
+
+    /**
+     * Replace any "%xxx%" substrings with the value of simple property "xxx" in the provided configuration.
+     *
+     * @param value the string with possible replacements
+     * @param pluginConfig the configuration with properties for replacing
+     * @return a new string with all the matching substrings replaced
+     * @since 4.12
+     */
+    public static String replacePropertyPatterns(String value, Configuration pluginConfig) {
         Pattern pattern = Pattern.compile("(%([^%]*)%)");
         Matcher matcher = pattern.matcher(value);
-        Configuration pluginConfig = context.getPluginConfiguration();
         StringBuffer buffer = new StringBuffer();
         while (matcher.find()) {
             String propName = matcher.group(2);
@@ -838,5 +763,4 @@ public abstract class BaseServerComponent<T extends ResourceComponent<?>> extend
         matcher.appendTail(buffer);
         return buffer.toString();
     }
-
 }

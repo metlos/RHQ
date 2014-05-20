@@ -20,13 +20,26 @@ package org.rhq.modules.plugins.jbossas7;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import javax.xml.stream.XMLStreamException;
+
 import org.jetbrains.annotations.NotNull;
 
+import org.rhq.common.wildfly.Patch;
+import org.rhq.common.wildfly.PatchInfo;
+import org.rhq.common.wildfly.PatchParser;
 import org.rhq.core.domain.configuration.Configuration;
 import org.rhq.core.domain.configuration.Property;
 import org.rhq.core.domain.configuration.PropertyList;
@@ -34,11 +47,18 @@ import org.rhq.core.domain.configuration.PropertyMap;
 import org.rhq.core.domain.measurement.MeasurementDataTrait;
 import org.rhq.core.domain.measurement.MeasurementReport;
 import org.rhq.core.domain.measurement.MeasurementScheduleRequest;
+import org.rhq.core.domain.resource.CreateResourceStatus;
 import org.rhq.core.pluginapi.configuration.ConfigurationUpdateReport;
+import org.rhq.core.pluginapi.content.ContentContext;
+import org.rhq.core.pluginapi.content.ContentFacet;
+import org.rhq.core.pluginapi.inventory.CreateResourceReport;
 import org.rhq.core.pluginapi.inventory.ResourceComponent;
 import org.rhq.core.pluginapi.measurement.MeasurementFacet;
 import org.rhq.core.pluginapi.operation.OperationFacet;
 import org.rhq.core.pluginapi.operation.OperationResult;
+import org.rhq.core.system.ProcessExecutionResults;
+import org.rhq.core.util.stream.StreamUtil;
+import org.rhq.modules.plugins.jbossas7.helper.ServerCommandRunner;
 import org.rhq.modules.plugins.jbossas7.json.Address;
 import org.rhq.modules.plugins.jbossas7.json.Operation;
 import org.rhq.modules.plugins.jbossas7.json.ReadAttribute;
@@ -249,4 +269,101 @@ public class StandaloneASComponent<T extends ResourceComponent<?>> extends BaseS
         return "base-dir";
     }
 
+    @Override
+    protected CreateResourceReport deployContent(CreateResourceReport report) {
+        if (report.getResourceType().getName().equals("Patch")) {
+            ContentContext cctx = context.getContentContext();
+
+            File patchFile;
+            try {
+                patchFile = File.createTempFile("rhq-jbossas-7-", ".patch");
+            } catch (IOException e) {
+                report.setErrorMessage("Could not create a temporary file to download the patch to. " + e.getMessage());
+                report.setStatus(CreateResourceStatus.FAILURE);
+                return report;
+            }
+
+            OutputStream out;
+            try {
+                out = new BufferedOutputStream(new FileOutputStream(patchFile));
+            } catch (FileNotFoundException e) {
+                report.setErrorMessage("Could not open the temporary file to download the patch to. " + e.getMessage());
+                report.setStatus(CreateResourceStatus.FAILURE);
+                return report;
+            }
+
+            try {
+                cctx.getContentServices().downloadPackageBitsForChildResource(cctx, "Patch",
+                    report.getPackageDetails().getKey(), out);
+            } finally {
+                StreamUtil.safeClose(out);
+            }
+
+            ProcessExecutionResults results = ServerCommandRunner.onServer(context.getPluginConfiguration(), getMode(),
+                context.getSystemInformation()).runCliCommand("patch apply --path=" + patchFile.getAbsolutePath());
+
+            if (results.getError() != null || results.getExitCode() == null || results.getExitCode() != 0) {
+                String message = "Applying the patch failed ";
+                if (results.getError() != null) {
+                    message += "with an exception: " + results.getError().getMessage();
+                } else {
+                    if (results.getExitCode() == null) {
+                        message += "with a timeout.";
+                    } else {
+                        message += "with exit code " + results.getExitCode();
+                    }
+
+                    message += " The attempt produced the following output:\n" + results.getCapturedOutput();
+                }
+
+                report.setErrorMessage(message);
+                report.setStatus(CreateResourceStatus.FAILURE);
+                return report;
+            }
+
+            //now let's see what we actually installed so that we can set up the report accordingly.
+            InputStream in;
+            try {
+                in = new BufferedInputStream(new FileInputStream(patchFile));
+            } catch (IOException e) {
+                report.setErrorMessage("Failed to open the patch file for reading. " + e.getMessage());
+                report.setStatus(CreateResourceStatus.FAILURE);
+                return report;
+            }
+
+            PatchInfo patchInfo;
+            try {
+                patchInfo = PatchParser.parse(in, false);
+            } catch (IOException e) {
+                report.setErrorMessage("Failed to parse the patch file. " + e.getMessage());
+                //well, this status might seem a bit strange, but if we got this far, it means that the AS server
+                //has successfully applied the patch. It is RHQ that didn't understand the patch contents so we should
+                //not error out...
+                report.setStatus(CreateResourceStatus.IN_PROGRESS);
+                return report;
+            } catch (XMLStreamException e) {
+                report.setErrorMessage("Failed to parse the patch file. " + e.getMessage());
+                //well, this status might seem a bit strange, but if we got this far, it means that the AS server
+                //has successfully applied the patch. It is RHQ that didn't understand the patch contents so we should
+                //not error out...
+                report.setStatus(CreateResourceStatus.IN_PROGRESS);
+                return report;
+            }
+
+            if (patchInfo.is(Patch.class)) {
+                //we're only able to provide the creation info if this is a single patch.
+                //the patch bundle results in a number of patches being created which is a situation we cannot
+                //describe here.
+                Patch patch = patchInfo.as(Patch.class);
+
+                report.setResourceKey(patch.getId());
+                report.setResourceName(patch.getId());
+            }
+
+            report.setStatus(CreateResourceStatus.SUCCESS);
+            return report;
+        } else {
+            return super.deployContent(report);
+        }
+    }
 }
