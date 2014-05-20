@@ -79,7 +79,6 @@ public abstract class BaseServerComponent<T extends ResourceComponent<?>> extend
     private static final String SEPARATOR = "\n-----------------------\n";
 
     final Log log = LogFactory.getLog(BaseServerComponent.class);
-    private static final long MAX_PROCESS_WAIT_TIME = 3600000L;
     private ASConnection connection;
     private LogFileEventResourceComponentHelper logFileEventDelegate;
     private StartScriptConfiguration startScriptConfig;
